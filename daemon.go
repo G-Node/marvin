@@ -1,71 +1,115 @@
 package main
 
 import (
-	"crypto/tls"
+	"encoding/json"
 	"fmt"
+	"io/ioutil"
+	"log"
 	"math/rand"
+	"net/http"
+	"os"
 	"strings"
+	"sync/atomic"
 	"time"
 
+	"golang.org/x/net/websocket"
+
+	"./quotes"
 	"github.com/G-Node/marvin/mensa"
-	"github.com/G-Node/marvin/quotes"
-	irc "github.com/fluffle/goirc/client"
 )
 
 type Bot struct {
-	conn *irc.Conn
-
+	conn *websocket.Conn
+	id   string
 	quit chan bool
 }
 
-func (b *Bot) onConncted(conn *irc.Conn, line *irc.Line) {
-	conn.Join("#gnode")
+type Message struct {
+	Id       uint64 `json:"id"`
+	Type     string `json:"type"`
+	Channel  string `json:"channel"`
+	Text     string `json:"text"`
+	Presence string `json:"presence"`
+	User     string `json:"user"`
 }
 
-func (b *Bot) onPrivMessage(conn *irc.Conn, line *irc.Line) {
-	text := line.Text()
-	target := line.Target()
+type responseSelf struct {
+	Id string `json:"id"`
+}
 
-	fmt.Printf("[D] {pm}: [%s] %s\n", target, text)
+type responseRtmStart struct {
+	Ok    bool         `json:"ok"`
+	Error string       `json:"error"`
+	Url   string       `json:"url"`
+	Self  responseSelf `json:"self"`
+}
 
-	if strings.HasPrefix(text, "mensa") {
-		mc := &mensa.Client{Address: "http://openmensa.org/api/v2"}
+type responseUserProfileGet struct {
+	Ok      bool             `json:"ok"`
+	Error   string           `json:"error"`
+	Profile slackUserProfile `json:"profile"`
+}
 
-		var meals []mensa.Meal
-		if strings.Contains(text, "tomorrow") {
-			meals, _ = mc.MealsForTomorrow("134")
-			// ignored error for now
-		} else {
-			meals, _ = mc.MealsForToday("134")
-		}
-		if len(meals) == 0 {
-			conn.Privmsgf(target, "No milk today, my love has gone away...")
-			return
-		}
-		if strings.Contains(text, "beilagen") {
-			b.postMeals(conn, target, meals, []string{"Beilagen"})
-			return
-		}
-		b.postMeals(conn, target, meals, []string{"Tagesgericht", "Aktionsessen", "Biogericht", "Aktion"})
+type slackUserProfile struct {
+	FirstName string `json:"first_name"`
+	LastName  string `json:"last_name"`
+}
+
+var counter uint64
+
+func (b *Bot) getMessage() (m Message, err error) {
+	err = websocket.JSON.Receive(b.conn, &m)
+	return
+}
+
+func (b *Bot) postMessage(m Message) error {
+	m.Id = atomic.AddUint64(&counter, 1)
+	err := websocket.JSON.Send(b.conn, m)
+	if err != nil {
+		log.Printf("Could nor send message:%s becuase:%s", m.Text, err)
+	}
+	return err
+}
+
+func (b *Bot) postText(text string, channelID string) error {
+	log.Printf("Try to post:%s to channel:%s", text, channelID)
+	m := Message{}
+	m.Text = text
+	m.Type = "message"
+	m.Id = atomic.AddUint64(&counter, 1)
+	m.Channel = channelID
+	log.Println(m)
+	err := websocket.JSON.Send(b.conn, m)
+	if err != nil {
+		log.Printf("Could not send message:%s becuase:%s", m.Text, err)
+	}
+	return err
+}
+
+func (b *Bot) mensa(channelID string, text string) {
+
+	mc := &mensa.Client{Address: "http://openmensa.org/api/v2"}
+
+	var meals []mensa.Meal
+	if strings.Contains(text, "tomorrow") {
+		meals, _ = mc.MealsForTomorrow("134")
+		// ignored error for now
+	} else {
+		meals, _ = mc.MealsForToday("134")
+	}
+	if len(meals) == 0 {
+		b.postText(channelID, "No milk today, my love has gone away...")
 		return
 	}
-
-	if strings.Contains(text, "nix") {
-		conn.Privmsg(target, "https://youtu.be/Go4SI5ie7qE")
+	if strings.Contains(text, "beilagen") {
+		b.postMeals(channelID, meals, []string{"Beilagen"})
+		return
 	}
-
-	if strings.Contains(text, "gnode learn") {
-		idx := strings.LastIndex(text, "gnode learn")
-		err := quotes.LearnQuote(text[idx+11:])
-		if err != nil {
-			conn.Privmsg(target, "I think you ought to know I'm feeling very depressed.")
-			return
-		}
-		conn.Privmsgf(target, "I just learned smth. new!")
-	}
+	b.postMeals(channelID, meals, []string{"Tagesgericht", "Aktionsessen", "Biogericht", "Aktion"})
+	return
 }
 
-func (b *Bot) postMeals(conn *irc.Conn, target string, meals []mensa.Meal, catToUse []string) {
+func (b *Bot) postMeals(channelID string, meals []mensa.Meal, catToUse []string) {
 	messageFilter := strings.NewReplacer("[]", "")
 	for _, meal := range meals {
 		category := meal.Category
@@ -82,19 +126,43 @@ func (b *Bot) postMeals(conn *irc.Conn, target string, meals []mensa.Meal, catTo
 		notes := mensa.Emojify(strings.Join(meal.Notes, ", "))
 		message := fmt.Sprintf("%s [%s] [%s]", meal.Name, notes,
 			mensa.Emojify(strings.Join(prices, ", ")))
-		conn.Privmsg(target, messageFilter.Replace(message))
+		b.postText(messageFilter.Replace(message), channelID)
 	}
 }
 
-func (b *Bot) onJoin(conn *irc.Conn, line *irc.Line) {
-	target := line.Target()
-	nick := line.Nick
-	fmt.Printf("[D] {pm}: [%s] %s\n", line.Nick, line.Text())
+func (b *Bot) quote(channelId string) {
 	quote, err := quotes.GetRandomQuote()
 	if err != nil {
-		fmt.Println(err)
+		log.Println(err)
 	}
-	conn.Privmsgf(target, "Welcome %s! Did you know that %s said \"%s\"", nick, quote.Author, quote.Txt)
+	b.postText(fmt.Sprintf("Did you know that %s said:  \"%s\"", quote.Author, quote.Txt), channelId)
+}
+
+func (b *Bot) getUserProfile(userID string) slackUserProfile {
+	profile := slackUserProfile{}
+	url := fmt.Sprintf("https://slack.com/api/rtm.start?token=%s&user=%s",
+		os.Getenv("MARVIN_TOKEN"), userID)
+	resp, err := http.Get(url)
+	if resp.StatusCode != 200 {
+		err = fmt.Errorf("API request failed with code %d", resp.StatusCode)
+		return profile
+	}
+	body, err := ioutil.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil {
+
+	}
+	var respObj responseUserProfileGet
+	err = json.Unmarshal(body, &respObj)
+	if err != nil {
+		return profile
+	}
+
+	if !respObj.Ok {
+		err = fmt.Errorf("Slack error: %s", respObj.Error)
+		return profile
+	}
+	return respObj.Profile
 }
 
 func stringInSlice(a string, list []string) bool {
@@ -106,39 +174,95 @@ func stringInSlice(a string, list []string) bool {
 	return false
 }
 
-func NewBot() *Bot {
-	cfg := irc.NewConfig("gnode", "marvin", "Metal Man")
-	cfg.SSL = true
-	cfg.SSLConfig = &tls.Config{ServerName: "irc.freenode.net"}
-	cfg.Server = "irc.freenode.net:7000"
-	cfg.NewNick = func(n string) string { return n + "^" }
-	cfg.Version = "0.1"
-	cfg.QuitMessage = "Oh god, I am so depressed!"
+func slackStart(token string) (wsurl, id string, err error) {
+	url := fmt.Sprintf("https://slack.com/api/rtm.start?token=%s", token)
+	resp, err := http.Get(url)
+	if err != nil {
+		return
+	}
+	if resp.StatusCode != 200 {
+		err = fmt.Errorf("API request failed with code %d", resp.StatusCode)
+		return
+	}
+	body, err := ioutil.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil {
+		return
+	}
+	var respObj responseRtmStart
+	err = json.Unmarshal(body, &respObj)
+	if err != nil {
+		return
+	}
 
-	c := irc.Client(cfg)
-	b := &Bot{conn: c}
-	b.quit = make(chan bool)
+	if !respObj.Ok {
+		err = fmt.Errorf("Slack error: %s", respObj.Error)
+		return
+	}
 
-	c.HandleFunc(irc.CONNECTED, b.onConncted)
-	c.HandleFunc(irc.DISCONNECTED,
-		func(conn *irc.Conn, line *irc.Line) { b.quit <- true })
-
-	c.HandleFunc(irc.PRIVMSG, b.onPrivMessage)
-	c.HandleFunc(irc.JOIN, b.onJoin)
-
-	return b
+	wsurl = respObj.Url
+	id = respObj.Self.Id
+	return
 }
 
-func main() {
-
-	b := NewBot()
-
-	if err := b.conn.Connect(); err != nil {
-		fmt.Printf("Connection error: %s\n", err.Error())
+func slackConnect(token string) (*websocket.Conn, string) {
+	wsurl, id, err := slackStart(token)
+	if err != nil {
+		log.Fatal(err)
 	}
+
+	ws, err := websocket.Dial(wsurl, "", "https://api.slack.com/")
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	return ws, id
+}
+
+func NewBot() *Bot {
+	c, id := slackConnect(os.Getenv("MARVIN_TOKEN"))
+	b := &Bot{conn: c, id: id}
+	return b
+}
+func main() {
+	bot := NewBot()
+	log.Printf("Got a new bot id %s", bot.id)
 	rand.Seed(time.Now().UTC().UnixNano())
 
-	b.SetupGithub()
+	for {
+		// read each incoming message
+		m, err := bot.getMessage()
+		log.Println(m.Channel)
+		log.Println(m.Text)
+		if m.Type == "message" {
+			if strings.Contains(m.Text, "nix") {
+				m.Type = "message"
+				m.Text = "https://www.youtube.com/watch?v=Go4SI5ie7qE"
+				bot.postMessage(m)
+			}
+			if strings.Contains(m.Text, "mensa") {
+				bot.mensa(m.Channel, m.Text)
+			}
+			if strings.Contains(m.Text, "marvin") {
+				bot.postText("I am depressed", m.Channel)
+			}
 
-	<-b.quit
+			if err != nil {
+				log.Fatal(err)
+			}
+		}
+		if m.Type == "channel_join" || strings.Contains(m.Text, "quote") {
+			bot.quote(m.Channel)
+		}
+
+		if m.Type == "presence_change" {
+			log.Println(m)
+			if m.Presence == "active" {
+				bot.quote("C087SE58E")
+			}
+		}
+	}
+	//b.SetupGithub()
+
+	//<-b.quit
 }
