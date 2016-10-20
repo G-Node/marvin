@@ -16,7 +16,7 @@ type quote struct {
 
 func GetRandomQuote() (quote, error) {
 	client := &http.Client{}
-	req, err := client.Get("http://localhost:8080/getquote")
+	req, err := client.Get("http://localhost:8090/getquote")
 	if err != nil {
 		return quote{"Nothing", "Nobody"}, err
 	}
@@ -41,7 +41,7 @@ func LearnQuote(text string) error {
 			return err
 		}
 		client := &http.Client{}
-		req, err := http.NewRequest("POST", "http://localhost:8080/learnquote",
+		req, err := http.NewRequest("POST", "http://localhost:8090/learnquote",
 			bytes.NewBuffer(newQuoteJSON))
 		req.Header.Set("Content-Type", "application/json")
 		client.Do(req)

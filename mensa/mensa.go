@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -29,6 +30,7 @@ func (mensa *Client) Meals(canteen string, day time.Time) ([]Meal, error) {
 	url := fmt.Sprintf("%s/canteens/%s/days/%d-%02d-%02d/meals",
 		mensa.Address, canteen,
 		day.Year(), day.Month(), day.Day())
+	log.Printf("calling Mensa with: %s", url)
 
 	res, err := client.Get(url)
 	if err != nil {
