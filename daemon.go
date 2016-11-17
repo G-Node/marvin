@@ -255,7 +255,7 @@ func (b *Bot) onMessage(m Message) {
 }
 
 func (b *Bot) onPresenceChange(m Message) {
-	log.Println(m)
+	//log.Println(m)
 	if m.Presence == "active" {
 		userID := m.User
 		userP := b.getUserProfile(userID)
