@@ -64,8 +64,10 @@ func (mensa *Client) MealsForTomorrow(canteen string) ([]Meal, error) {
 func Emojify(notes string) string {
 	repl := strings.NewReplacer(
 		"Gericht mit Schweinefleisch", "🐖",
+		"Schweinefleisch", "🐖",
 		"mit Fleisch", "🍖",
 		"veganes Gericht", "🌿",
+		"vegan", "🌿",
 		"fleischloses Gericht", "🍄",
 		"Gericht mit Rindfleisch", "🐂",
 		"Gericht mit Alkohol", "🍷",
@@ -78,7 +80,10 @@ func Emojify(notes string) string {
 		"mit Phosphat", "☠",
 		"mit einer Zuckerart und Süßungsmitteln", "🍯",
 		"enthält eine Phenylalaninquelle", "⌬",
-		"mit Farbstoff", "🖌")
+		"mit Farbstoff", "🖌",
+		"Gelatine","藻",
+		"Kakaohaltige Fettglasur","🍫",
+		"Rindfleisch","🐄")
 
 	return repl.Replace(notes)
 }

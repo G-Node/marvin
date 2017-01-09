@@ -129,7 +129,7 @@ func NewBot() *Bot {
 }
 func (b *Bot) getMessage() (m Message, err error) {
 	err = websocket.JSON.Receive(b.conn, &m)
-	return
+	return 
 }
 
 func (b *Bot) postMessage(m Message) error {
@@ -281,7 +281,10 @@ func main() {
 		// read each incoming message
 		m, err := bot.getMessage()
 		if err != nil {
+			bot.conn.Close()
+			bot = NewBot()
 			log.Println(err)
+			log.Println("Cretaed new bot")
 		} else {
 			if f, ok := bot.eventRegistry[m.Type]; ok {
 				f(m)
